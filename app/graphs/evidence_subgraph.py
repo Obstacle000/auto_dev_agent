@@ -293,7 +293,7 @@ def _build_code_probe_tools(
             return f"读取文件失败（非法路径或IO错误）: {rel_path}"
         norm_rel = rel_path.replace("\\", "/").lstrip("/")
         if norm_rel and not ev.raw_snippet.startswith("文件不存在") and norm_rel not in read_files:
-            read_files.append(norm_rel)
+            read_files.append(norm_rel) # 这个就是chat_file
         return f"[{ev.id}] {ev.summary}\n{ev.raw_snippet}"
 
     @tool
@@ -510,7 +510,7 @@ async def code_tools_node(
         "chat_fnames": read_files,
     }
 
-# 这个节点同时是db和code的工具节点
+# 这个节点同时是db和code的工具路由节点
 def _route_react_tools(
     state: ProbeWorkerState,
     *,

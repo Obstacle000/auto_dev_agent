@@ -29,7 +29,13 @@ from app.graphs.evidence_subgraph import evidence_probe_subgraph
 from app.graphs.sandbox_subgraph import sandbox_subgraph
 from app.graphs.state import AutoDevMainState
 from app.models.orm_models import PatchRecordORM
-from app.schemas.domain_schemas import ErrorCacheRecord, Evidence, build_cache_id
+from app.schemas.domain_schemas import (
+    EditPlanOutput,
+    EditPlanStep,
+    ErrorCacheRecord,
+    Evidence,
+    build_cache_id,
+)
 
 
 def _emit_custom(event: str, data: dict) -> None:
@@ -215,14 +221,15 @@ async def edit_planner_node(
 
     if llm_client_manager.has_valid_key():
         try:
+            # 按理来说此时模型调用了探查源码工具,chat_fnames里面应该有东西了
+            # 如果这个时候没有chat_fnames的话下面让模型制定计划的时候模型会指定target,然后拼接target_files 和 chat_fnames
             chat_files_block = load_chat_files_block(
                 ctx["repo_root"],
                 list(state.get("chat_fnames") or []),
             )
             chunks = ChatChunks(
                 system_prompt=(
-                    "请基于已收集证据与源码上下文输出 JSON 文件变更计划数组，"
-                    '每项包含 {"file_path": "...", "action": "modify|create", "reason": "...", "evidence_ids": ["..."]}。'
+                    "你是资深代码修改规划专家。请基于已收集证据与源码上下文，规划本次任务的目标文件列表与操作步骤。"
                 ),
                 repo_map=state.get("repo_map", ""),
                 db_repo_map=state.get("db_repo_map", ""),
@@ -230,16 +237,18 @@ async def edit_planner_node(
                 evidence_block=ev_summary,
                 user_query=state.get("user_query", ""),
             )
-            resp = await llm_client_manager.get_llm(temperature=0.0).ainvoke(chunks.to_messages())
-            raw = str(resp.content or "").strip()
-            match_start = raw.find("[")
-            match_end = raw.rfind("]")
-            if match_start != -1 and match_end != -1:
-                parsed = json.loads(raw[match_start : match_end + 1])
-                if isinstance(parsed, list):
-                    plan = parsed
+            llm = llm_client_manager.get_llm(temperature=0.0)
+            structured_llm = llm.with_structured_output(EditPlanOutput)
+            result = await structured_llm.ainvoke(chunks.to_messages())
+            if isinstance(result, EditPlanOutput):
+                plan = [p.model_dump() for p in result.plan]
+                target_files = list(result.target_files or [])
+            elif isinstance(result, dict):
+                plan = list(result.get("plan") or [])
+                target_files = list(result.get("target_files") or [])
         except Exception:
             plan = []
+            target_files = []
 
     if not plan:
         ev_ids = [ev.id for ev in evidences[:3]]
@@ -258,11 +267,21 @@ async def edit_planner_node(
                 }
             )
 
-    target_files = [item.get("file_path", "") for item in plan if item.get("file_path")]
+    all_target_files = set(target_files)
+    for item in plan:
+        fp = item.get("file_path")
+        if fp:
+            all_target_files.add(fp)
+
+    target_files = [
+        f.replace("\\", "/").lstrip("/") for f in all_target_files if f and isinstance(f, str)
+    ]
     prev_chat = list(state.get("chat_fnames") or [])
     prev_other = list(state.get("other_fnames") or [])
-    merged_chat = list(dict.fromkeys([*prev_chat, *(f.replace("\\", "/") for f in target_files)]))
+    merged_chat = list(dict.fromkeys([*prev_chat, *target_files]))
+
     chat_set = {Path(f).as_posix() for f in merged_chat}
+    # 更新other_fnames
     updated_other = [f for f in prev_other if Path(f).as_posix() not in chat_set]
     repo_map = state.get("repo_map", "")
     if (merged_chat or updated_other) and merged_chat != prev_chat:

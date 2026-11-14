@@ -73,6 +73,20 @@ class EditPlanStep(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
 
 
+class EditPlanOutput(BaseModel):
+    """修改规划阶段模型结构化输出载荷."""
+
+    thought: str = Field(default="", description="整体修改思路与模块影响分析")
+    target_files: list[str] = Field(
+        default_factory=list,
+        description="本次需要纳入 chat_fnames 供正文读取或修改的核心源码相对路径列表",
+    )
+    plan: list[EditPlanStep] = Field(
+        default_factory=list,
+        description="具体的文件变更操作清单",
+    )
+
+
 class ErrorCacheRecord(BaseModel):
     """报错经验缓存三端同步标准载荷."""
 

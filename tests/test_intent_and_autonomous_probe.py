@@ -214,3 +214,62 @@ async def test_qa_intent_short_circuits_to_answer_only_node(
     assert res.get("final_commit_sha") is None
     assert fake_repo.updates[-1]["status"] == "completed"
     assert len(fake_repo.evidences) >= 2
+
+
+@pytest.mark.anyio
+async def test_edit_planner_node_structured_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.graphs.main_graph import edit_planner_node
+    from app.schemas.domain_schemas import EditPlanOutput, EditPlanStep
+
+    (tmp_path / "service.py").write_text("def run(): pass\n", encoding="utf-8")
+
+    class _FakeStructuredLLM:
+        async def ainvoke(self, messages):
+            return EditPlanOutput(
+                thought="修复空指针并增加单元测试",
+                target_files=["service.py", "tests/test_service.py"],
+                plan=[
+                    EditPlanStep(
+                        file_path="service.py",
+                        action="modify",
+                        reason="修复空指针",
+                        evidence_ids=["ev_1"],
+                    ),
+                    EditPlanStep(
+                        file_path="tests/test_service.py",
+                        action="create",
+                        reason="新增单测",
+                        evidence_ids=[],
+                    ),
+                ],
+            )
+
+    class _FakeLLM:
+        def with_structured_output(self, schema):
+            assert schema is EditPlanOutput
+            return _FakeStructuredLLM()
+
+    monkeypatch.setattr(llm_client_manager, "has_valid_key", lambda: True)
+    monkeypatch.setattr(llm_client_manager, "get_llm", lambda **kwargs: _FakeLLM())
+
+    state = {
+        "user_query": "请修复 service.py 的空指针",
+        "chat_fnames": [],
+        "other_fnames": ["service.py"],
+        "evidences": [],
+        "repo_map": "",
+    }
+
+    class _FakeRuntime:
+        context = _make_ctx(tmp_path)
+
+    result = await edit_planner_node(state, _FakeRuntime())
+
+    assert len(result["edit_plan"]) == 2
+    assert result["edit_plan"][0]["file_path"] == "service.py"
+    assert result["edit_plan"][0]["action"] == "modify"
+    assert "service.py" in result["chat_fnames"]
+    assert "tests/test_service.py" in result["chat_fnames"]
+

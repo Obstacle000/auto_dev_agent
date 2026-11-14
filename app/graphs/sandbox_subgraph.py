@@ -13,8 +13,23 @@ from app.core.git_ops import compute_diff_against_dir
 from app.graphs.context import AutoDevContext
 from app.graphs.state import SandboxSubState
 from app.sandbox.container_runner import LinuxContainerSandbox
-
-
+# 沙箱实现机制:
+# 在之前我是用三个沙箱目录:本地目录,宿主机目录,容器目录互相挂载实现agent改动本地文件,容器内部文件也跟着改变的效果
+# 现在彻底去除了 Volume 目录挂载,改为了本地影子副本隔离 + docker cp 单向增量推送 + docker exec 隔离执行
+# 真实代码仓库 (src_repo)
+#       │
+#       ▼ 1. 启动沙箱时单向克隆
+# .sandboxes/{task_id}/ (本地影子沙箱目录)
+#       │
+#       ├─► 2. Agent 在此目录应用 SEARCH/REPLACE 差异补丁
+#       │
+#       ▼ 3. docker cp 增量精准推送到容器
+# Docker Linux 容器 (/workspace)
+#       │
+#       ▼ 4. docker exec 执行 pytest / lint 测试
+# 测试通过 + 人工审批通过？
+#       ├── YES ──► 将改动同步并原子提交回真实仓库分支 (git commit)
+#       └── NO  ──► 仅在沙箱内重试自愈，完全不污染原项目
 def _emit_custom(event: str, data: dict) -> None:
     try:
         from langgraph.config import get_stream_writer
